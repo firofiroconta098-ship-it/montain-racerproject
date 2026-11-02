@@ -1,0 +1,52 @@
+# Build libxenon do Montanha Racer  ->  montanha_racer.elf32  (renomeie para xenon.elf no pendrive)
+# Flags de ABI/link: as mesmas dos Makefiles de projetos libxenon publicados (genesis-plus-gx-xenon,
+# RetroArch/Makefile.xenon). Uso:  export DEVKITXENON=/usr/local/xenon ; make -f Makefile.xenon
+ifeq ($(strip $(DEVKITXENON)),)
+$(error Defina DEVKITXENON, ex.: export DEVKITXENON=/usr/local/xenon)
+endif
+export PATH := $(DEVKITXENON)/bin:$(DEVKITXENON)/usr/bin:$(PATH)
+
+CXX     := xenon-g++
+OBJCOPY := xenon-objcopy
+STRIP   := xenon-strip
+NM      := xenon-nm
+
+TARGET  := montanha_racer
+MACHDEP := -DXENON -m32 -mno-altivec -fno-pic -mpowerpc64 -mhard-float \
+           -L$(DEVKITXENON)/xenon/lib/32 -u read -u _start -u exc_base
+# libfat opcional: so ativa se a lib estiver instalada (build-xenon-toolchain libs)
+FATLIB  := $(if $(wildcard $(DEVKITXENON)/usr/lib/libfat.a),-lfat)
+FATDEF  := $(if $(FATLIB),-DHCR_HAVE_FAT)
+SAVE_PATH ?= uda:/montanha_racer.sav
+
+CXXFLAGS := -O2 -std=gnu++98 -fno-exceptions -fno-rtti -Wall $(MACHDEP) $(FATDEF) \
+            -DHCR_SAVE_PATH='"$(SAVE_PATH)"' -I$(DEVKITXENON)/usr/include
+LDFLAGS  := -m32 -n -T $(DEVKITXENON)/app.lds -L. -L$(DEVKITXENON)/usr/lib -L$(DEVKITXENON)/xenon/lib/32
+LIBS     := $(FATLIB) -lxenon -lm -lc
+
+OBJS := build/game.o build/main_xenon.o
+
+all: verify shaders/hcr_shaders.h $(TARGET).elf32
+
+verify:
+	@bash tools/verify_symbols.sh
+
+shaders/hcr_shaders.h: shaders/vs.bin shaders/ps.bin
+	python3 tools/bin2h.py
+
+build/%.o: src/core/%.cpp | build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+build/main_xenon.o: src/platform_xenon/main_xenon.cpp shaders/hcr_shaders.h | build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+build:
+	mkdir -p build
+
+$(TARGET).elf: $(OBJS)
+	$(CXX) $(MACHDEP) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
+$(TARGET).elf32: $(TARGET).elf
+	$(OBJCOPY) -O elf32-powerpc --adjust-vma 0x80000000 $< $@
+	$(STRIP) $@
+
+clean:
+	rm -rf build $(TARGET).elf $(TARGET).elf32
+.PHONY: all verify clean

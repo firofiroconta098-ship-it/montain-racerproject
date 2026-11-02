@@ -1,0 +1,77 @@
+# Build do Montanha Racer para Xbox 360 RGH/JTAG com o x360-sdk (openpak/x360-sdk)  ->  default.xex
+#
+# Uso (Linux/WSL), com o SDK ja construido (veja README_XEX.md):
+#     make -f Makefile.xsdk XSDK=/caminho/para/x360-sdk
+#     make -f Makefile.xsdk XSDK=... dist        # monta dist/MontanhaRacer/ pronto para copiar ao console
+#
+# Variaveis:
+#   XSDK       raiz do checkout do x360-sdk, onde `make` ja gerou build/libxsdk.a      (obrigatorio)
+#   TOOLCHAIN  prefixo do toolchain do SDK (tools/toolchain/build.sh)  [$(HOME)/xsdk-gcc/bin/powerpc-xsdk-elf-]
+#   TITLE_ID   (opcional) Title ID em hex, repassado ao elf2xex; sem ele vale o padrao do SDK (0x5853444B)
+#   SAVE_PATH / SAVE_PATH_FALLBACK  onde gravar o save (padrao: game:\ = pasta do XEX, depois cache:\)
+#
+# Nada aqui e executado pelos testes de PC; este Makefile so roda onde o toolchain do SDK existe.
+
+XSDK      ?=
+TOOLCHAIN ?= $(HOME)/xsdk-gcc/bin/powerpc-xsdk-elf-
+PYTHON    ?= python3
+
+ifeq ($(strip $(XSDK)),)
+$(error Defina XSDK=/caminho/para/x360-sdk (checkout ja construido com `make`). Veja README_XEX.md)
+endif
+
+CXX     := $(TOOLCHAIN)g++
+OBJDUMP := $(TOOLCHAIN)objdump
+BUILD   := build_xsdk
+TARGET  := montanha_racer
+
+# Mesmas opcoes de ABI/otimizacao do Makefile do SDK. -Wall sem -Werror: o nucleo e C++03 e nao deve quebrar
+# por aviso de um GCC mais novo. O toolchain do SDK ja define -D__XSDK__ (usado por main_xsdk.cpp).
+CXXFLAGS := -mcpu=cell -fno-pic -std=gnu++17 -O2 -g -Wall -MMD -MP -I$(XSDK)/include \
+            $(if $(SAVE_PATH),-DHCR_SAVE_PATH='"$(SAVE_PATH)"') \
+            $(if $(SAVE_PATH_FALLBACK),-DHCR_SAVE_PATH_FALLBACK='"$(SAVE_PATH_FALLBACK)"')
+LDFLAGS  := -static -nostdlib -T $(XSDK)/src/xsdk.ld
+LIBS     := -Wl,--start-group $(XSDK)/build/libxsdk.a -lstdc++ -lc -lm -lgcc -Wl,--end-group
+
+OBJS := $(BUILD)/game.o $(BUILD)/main_xsdk.o
+
+all: check default.xex
+
+check:
+	@test -x "$(CXX)" || { echo "ERRO: toolchain nao encontrado em $(TOOLCHAIN) (rode $(XSDK)/tools/toolchain/build.sh)"; exit 1; }
+	@test -f "$(XSDK)/build/libxsdk.a" || { echo "ERRO: $(XSDK)/build/libxsdk.a nao existe (rode make dentro de $(XSDK))"; exit 1; }
+	@test -f "$(XSDK)/tools/elf2xex.py" || { echo "ERRO: $(XSDK)/tools/elf2xex.py nao existe"; exit 1; }
+
+$(BUILD):
+	mkdir -p $(BUILD)
+
+$(BUILD)/game.o: src/core/game.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+$(BUILD)/main_xsdk.o: src/platform_xsdk/main_xsdk.cpp shaders/hcr_xsdk_shaders.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(TARGET).elf: $(OBJS) $(XSDK)/build/libxsdk.a $(XSDK)/src/xsdk.ld
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -Wl,-Map,$(BUILD)/$(TARGET).map -o $@ $(OBJS) $(LIBS)
+
+# O SDK nomeia o log pelo .xex: default.xex grava game:\default.log no console (use-o para diagnosticar).
+default.xex: $(TARGET).elf
+	$(PYTHON) $(XSDK)/tools/elf2xex.py $< $@ $(if $(TITLE_ID),--title-id $(TITLE_ID))
+
+# Opcional (o Makefile do SDK faz o mesmo): lista instrucoes que o Xenia pularia; so informativo.
+xenia-scan: $(TARGET).elf
+	$(OBJDUMP) -d $< | $(PYTHON) $(XSDK)/tools/xenia_scan.py
+
+# Pasta pronta para o console. A licenca BSD das partes do libxenon/Xenia dentro do libxsdk.a pede o aviso junto
+# do binario: o SDK diz para distribuir THIRD_PARTY_NOTICES.md ao lado do .xex.
+dist: all
+	rm -rf dist/MontanhaRacer && mkdir -p dist/MontanhaRacer
+	cp default.xex dist/MontanhaRacer/default.xex
+	cp $(XSDK)/THIRD_PARTY_NOTICES.md $(XSDK)/LICENSE dist/MontanhaRacer/ 2>/dev/null || true
+	cp README_XEX.md dist/MontanhaRacer/LEIA-ME.txt
+	@echo "Copie dist/MontanhaRacer/ para o HD/USB do console e adicione a pasta ao scan do Aurora."
+
+clean:
+	rm -rf $(BUILD) $(TARGET).elf default.xex dist
+
+-include $(OBJS:.o=.d)
+.PHONY: all check xenia-scan dist clean
